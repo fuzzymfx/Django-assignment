@@ -1,65 +1,65 @@
-from django.shortcuts import redirect, render
+import datetime
+import build
+import google_apis_oauth
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 from django.urls import reverse
+from django.http import HttpResponse
 from django.views import View
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-
+from django.shortcuts import render, redirect
+import requests
 import json
 import os
 
+GOOGLE_CLIENT_SECRET_PATH = os.path.join(os.getcwd(), 'client_secrets.json')
+
 GOOGLE_CLIENT_SECRET = json.loads(os.getenv('GOOGLE_CLIENT_SECRET'))
+GOOGLE_CLIENT_ID = GOOGLE_CLIENT_SECRET["web"]["client_id"]
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+REDIRECT_URI = 'https://fuzzymfx-ominous-bassoon-xxx7rpwpgvwf64gj-8000.preview.app.github.dev/rest/v1/calendar/redirect/'
 
 
-class GoogleCalendarInitView(View):
-    def get(self, request):
-        flow = Flow.from_client_config(
-            GOOGLE_CLIENT_SECRET,
-            scopes=['https://www.googleapis.com/auth/calendar'],
-            redirect_uri=request.build_absolute_uri(
-                reverse('googlecalendar:calendar-redirect')))
-        authorization_url, state = flow.authorization_url(
-            access_type='offline', include_granted_scopes='true')
-        request.session['google_auth_state'] = state
-        return redirect("authorization_url")
+def home(request):
+    return render(request, 'home.html')
 
 
-class GoogleCalendarRedirectView(View):
-    def get(self, request, *args, **kwargs):
-        # Verify the state parameter
-        if 'google_auth_state' not in request.session or \
-                request.GET.get('state') != request.session['google_auth_state']:
-            return render(request, 'googlecalendar/error.html',
-                          {'error': 'Invalid state parameter'})
+def GoogleCalendarInitView(request):
+    return redirect(google_apis_oauth.get_authorization_url(
+        GOOGLE_CLIENT_SECRET_PATH,
+        SCOPES,
+        REDIRECT_URI)
+    )
 
-        # Get the authorization code from the request
-        code = request.GET.get('code')
 
-        # Exchange the authorization code for a token
-        flow = Flow.from_client_config(
-            GOOGLE_CLIENT_SECRET,
-            scopes=['https://www.googleapis.com/auth/calendar'],
-            redirect_uri=request.build_absolute_uri(
-                reverse('googlecalendar:calendar-redirect')))
-        flow.fetch_token(code=code)
+def GoogleCalendarRedirectView(request):
 
-        # Save the credentials in the session
-        credentials = flow.credentials
-        request.session['google_credentials'] = credentials.to_json()
+    try:
+        # print(request)
+        # print(request.GET.get('code'))
 
-        # Use the credentials to get the list of events in the user's primary calendar
-        try:
-            service = build('calendar', 'v3', credentials=credentials)
-            events_result = service.events().list(
-                calendarId='primary',
-                timeMin='now',
-                maxResults=10,
-                singleEvents=True,
-                orderBy='startTime').execute()
-            events = events_result.get('items', [])
-            return render(request, 'googlecalendar/calendar.html',
-                          {'events': events})
-        except HttpError as error:
-            return render(request, 'googlecalendar/error.html',
-                          {'error': f'An error occurred: {error}'})
+        credentials = google_apis_oauth.get_crendentials_from_callback(
+            request,
+            GOOGLE_CLIENT_SECRET_PATH,
+            SCOPES,
+            REDIRECT_URI
+        )
+        token = google_apis_oauth.stringify_credentials(credentials)
+
+        creds = google_apis_oauth.load_credentials(token)
+        service = build('calendar', 'v3', credentials=creds)
+        now = datetime.datetime.utcnow().isoformat() + 'Z'
+        print('Getting the upcoming 10 events')
+        events_result = service.events().list(
+            calendarId='primary', timeMin=now,
+            maxResults=10, singleEvents=True,
+            orderBy='startTime').execute()
+        events = events_result.get('items', [])
+        if not events:
+            print('No upcoming events found.')
+        for event in events:
+            start = event['start'].get(
+                'dateTime', event['start'].get('date'))
+            print(start, event['summary'])
+    except Exception as e:
+        print(e)
+        return HttpResponse('Error')
